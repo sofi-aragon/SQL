@@ -1,0 +1,208 @@
+CREATE SCHEMA centro_medico;
+USE centro_medico;
+
+CREATE TABLE especialidades_medicas(
+	id_especialidad INT NOT NULL AUTO_INCREMENT PRIMARY KEY, 
+    nombre VARCHAR(100) NOT NULL
+);
+
+CREATE TABLE coberturas_medicas(
+	id_plan INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    nombre VARCHAR(45) NOT NULL
+);
+
+CREATE TABLE personal_medico(
+	id_pers_medico INT NOT NULL AUTO_INCREMENT PRIMARY KEY, 
+    nombre VARCHAR(50) NOT NULL,
+    apellido VARCHAR(50) NOT NULL
+);
+
+CREATE TABLE centros(
+	id_centro INT NOT NULL AUTO_INCREMENT PRIMARY KEY, 
+    localidad VARCHAR(50),
+    barrio VARCHAR(50)
+);
+
+CREATE TABLE pacientes(
+	id_paciente INT NOT NULL AUTO_INCREMENT PRIMARY KEY, 
+    nombre VARCHAR(50) NOT NULL,
+    apellido VARCHAR(50) NOT NULL,
+    dni INT NOT NULL,
+    mail VARCHAR(100),
+    telefono INT NOT NULL,
+    id_plan INT NOT NULL,
+    FOREIGN KEY(id_plan) REFERENCES coberturas_medicas(id_plan)
+);
+
+CREATE TABLE atencion(
+	id_atencion INT NOT NULL AUTO_INCREMENT PRIMARY KEY, 
+    fecha_atencion DATETIME NOT NULL,
+    id_paciente INT NOT NULL,
+    id_pers_medico INT NOT NULL,
+    id_especialidad INT NOT NULL,
+    id_centro INT NOT NULL,
+	FOREIGN KEY(id_paciente) REFERENCES pacientes(id_paciente),
+    FOREIGN KEY(id_pers_medico) REFERENCES personal_medico(id_pers_medico),
+    FOREIGN KEY(id_especialidad) REFERENCES especialidades_medicas(id_especialidad),
+    FOREIGN KEY(id_centro) REFERENCES centros(id_centro)
+);
+
+
+
+#Creacion de vistas
+#Pacientes con Plan 005
+create or replace view pacientes_PLAN005 as (
+SELECT DISTINCT p.nombre, p.apellido FROM pacientes p JOIN coberturas_medicas c ON (p.id_plan = c.id_plan)
+where c.nombre = "PLAN005");
+
+#Información de pacientes de Laboratorio de Analisis Clinico
+CREATE OR REPLACE VIEW pacientes_laboratorio AS
+(SELECT DISTINCT p.nombre, p.apellido, p.telefono,a.fecha_atencion
+	FROM atencion a
+	JOIN especialidades_medicas e
+	ON e.id_especialidad = a.id_especialidad
+    JOIN pacientes p
+    ON a.id_paciente = p.id_paciente
+    where e.nombre = "Laboratorios de Analisis Clinicos");
+    select * from pacientes_laboratorio;
+    
+#Atenciones de 2022
+CREATE or replace view atencion2022 as
+(SELECT id_atencion, fecha_atencion, id_paciente, id_pers_medico, id_especialidad, id_centro FROM atencion
+	WHERE fecha_atencion between '2022-01-01 00:00:00' and '2022-12-31 23:59:59' );
+	select * from atencion2022;
+    
+#Top 5 de Especialidades con mayor N° de atenciones
+create or replace view top5_especialidades as
+select e.nombre, a.id_especialidad,count(a.id_especialidad) as count from
+especialidades_medicas e join atencion a on (e.id_especialidad = a.id_especialidad)
+group by id_especialidad order by count desc limit 5;
+select * from top5_especialidades;
+
+#Top 3 Centros con mayor cantidad de atenciones
+create or replace view top3_centros_mayoratencion as
+select c.id_centro, c.localidad, c.barrio,count(a.id_centro) as count from
+centros c join atencion a on (c.id_centro = a.id_centro)
+group by c.id_centro order by count desc limit 3;
+select * from top3_centros_mayoratencion;
+
+
+#Creacion de Funciones
+#Arroja la locación de cada centro dependiendo si se encuentra en Capital Federal o en la provincia de Buenos Aires
+DROP FUNCTION IF EXISTS locacion_centros;
+DELIMITER //
+CREATE FUNCTION locacion_centros(localidad VARCHAR(25))
+   RETURNS VARCHAR(30)
+   DETERMINISTIC
+BEGIN
+	CASE 
+    WHEN localidad = 'Capital Federal' THEN
+      RETURN 'CABA';
+	ELSE RETURN 'Provincia de Buenos Aires';
+	END CASE; 
+ END //
+ 
+SELECT id_centro, localidad, locacion_centros(localidad) as locacion from centros;
+ 
+ 
+#Arroja el nombre de cada especialidad médica a partir de insertar el id de la especialidad como parámetro de entrada
+DROP FUNCTION IF EXISTS nombre_especialidad;
+DELIMITER //
+CREATE FUNCTION nombre_especialidad (id INT) 
+RETURNS VARCHAR(80)
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    RETURN (SELECT nombre FROM especialidades_medicas WHERE id_especialidad = id);
+END
+//
+
+SELECT DISTINCT nombre_especialidad(1) as Nombre_Especialidad;
+
+
+
+#Creacion de Stored Procedures
+#Ordena las atenciones de la tabla atencion a partir del campo que se invoque (en este caso, por el ID del paciente)
+DELIMITER //
+CREATE PROCEDURE ordenxpacientes (IN id_paciente CHAR(20))
+BEGIN
+	IF id_paciente <> '' THEN
+		SET @orden_paciente = concat('ORDER BY ', id_paciente);
+	ELSE
+		SET @orden_paciente = '';
+	END IF;
+    
+    SET @clausula = concat('SELECT * FROM atencion ', @orden_paciente);
+	PREPARE runSQL FROM @clausula;
+	EXECUTE runSQL;
+	DEALLOCATE PREPARE runSQL;
+END
+//
+CALL ordenxpacientes('id_paciente');
+
+
+#Cuenta la cantidad de atenciones brindadas en cada especialidad. Al llamar al procedure y realizar el select eligiendo el mismo id_especialidad, arroja el total de atenciones y el nombre de la especialidad
+DROP PROCEDURE IF EXISTS contar_atenciones;
+DELIMITER //
+CREATE PROCEDURE contar_atenciones(IN id VARCHAR(50), OUT total INT UNSIGNED)
+BEGIN
+  SET total = (
+    SELECT COUNT(*) 
+    FROM atencion
+    WHERE atencion.id_especialidad = id);
+END
+//
+CALL contar_atenciones(3,@total);
+SELECT DISTINCT @total as Total_Atenciones, e.nombre as Nombre_Especialidad from atencion a join especialidades_medicas e on (a.id_especialidad = e.id_especialidad) where a.id_especialidad = 3;
+
+
+
+#Creacion de Triggers
+#Trigger para no permitir que se inserten pacientes con un id_plan inválido. Si es menor o igual a 0, el trigger lo cambiará a 1, y si es mayor a 10, lo cambiará a 10, ambos valores considerados en la tabla coberturas_medicas
+DELIMITER $$
+CREATE TRIGGER trigger_check_idplan_before_insert
+BEFORE INSERT ON pacientes
+FOR EACH ROW
+BEGIN
+  IF NEW.id_plan <= 0 THEN
+    set NEW.id_plan = 1;
+  ELSEIF NEW.id_plan > 10 THEN
+    set NEW.id_plan = 10;
+  END IF;
+  END $$
+INSERT INTO pacientes VALUES (202,'Jose', 'Perez', '25741832', 'jose.perez@gmail.com',1131754122,0);
+SELECT * FROM pacientes where id_paciente = 202;
+
+
+
+#Tabla de auditoría para trackear los logs de creación de líneas
+CREATE TABLE _audits (
+	id_log INT PRIMARY KEY auto_increment,
+    entity varchar(100),
+    entity_id int,
+    insert_currdate date,
+    insert_currtime time,
+    created_by varchar(100)
+);
+
+#Trigger para crear logs en tabla de auditoría a partir de la inserción de datos en la tabla pacientes
+CREATE TRIGGER trigger_insert_pacientes_aud
+AFTER INSERT ON pacientes
+FOR EACH ROW
+INSERT INTO _audits (entity, entity_id, insert_currdate, insert_currtime, created_by)
+VALUES ('paciente', NEW.id_paciente, CURRENT_DATE(), CURRENT_TIME(), USER());
+
+
+INSERT INTO pacientes VALUES (204,'Romina', 'Lopez', '35178977', 'rominalopz35@gmail.com',1572646156,4);
+SELECT * FROM _audits;
+
+
+#Trigger para crear logs en tabla de auditoría a partir de la inserción de datos en la tabla atencion
+CREATE TRIGGER trigger_insert_atencion_aud
+AFTER INSERT ON atencion
+FOR EACH ROW
+INSERT INTO _audits (entity, entity_id, insert_currdate, insert_currtime, created_by)
+VALUES ('atencion', NEW.id_atencion, CURRENT_DATE(), CURRENT_TIME(), USER());
+
+INSERT INTO atencion VALUES (id_atencion,'2022-11-28 08:50:00',204,41,41,9);
+SELECT * FROM _audits;
