@@ -6,4 +6,4 @@ El presente repositorio incluye:
 
 -Carpeta con archivos CSV utilizados para la importación de datos
 
--Script de creación de la base y objetos
+-Script de creación de la base, tablas y objetos
